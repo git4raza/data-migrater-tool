@@ -1,5 +1,8 @@
 package io.mosip.packet.data.datareader;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.Gson;
 import io.mosip.kernel.core.exception.ExceptionUtils;
 import io.mosip.kernel.core.logger.spi.Logger;
@@ -234,11 +237,16 @@ public class DataBaseUtil implements DataReader {
 //            return null;
         }if (tableRequestDto.getQueryType().equals(QuerySelection.SQL_QUERY)) {
             String sqlQuery1 = tableRequestDto.getSqlQuery();
+            if (sqlQuery1.equals("${DEMO:ID_PERSONA}")) {
+                sqlQuery1 = "SELECT metadata_detalle AS JSON_DATA_ADDRESS FROM DWIDENTIDAD.tdoc_documento_mosip WHERE id_persona = ${DEMO:ID_PERSONA} AND id_plantilla = 18";
+                sqlQuery1 = formatter.replaceColumntoDataIfAny(sqlQuery1, dataMap);
+            }else {
 
-            sqlQuery1 = formatter.replaceColumntoDataIfAny(sqlQuery1, dataMap);
-            LOGGER.debug("SESSION_ID", "DATA_READER", "generateQuery()", "SQL Query After Replacement: " + sqlQuery1);
-
+                sqlQuery1 = formatter.replaceColumntoDataIfAny(sqlQuery1, dataMap);
+                LOGGER.debug("SESSION_ID", "DATA_READER", "generateQuery()", "SQL Query After Replacement: " + sqlQuery1);
+            }
             if (tableRequestDto.getExecutionOrderSequence() == 1) {
+
                 sqlQuery1 += " " + QueryOffsetLimitSetter.valueOf(dbType.toString()).getValue(OFFSET_VALUE, Long.valueOf(dbReaderMaxThreadPoolCount * dbReaderMaxRecordsCountPerThreadPool));
             }
 
@@ -271,7 +279,7 @@ public class DataBaseUtil implements DataReader {
         }
     }
 
-    public Map<String, Object> extractResultSet(ResultSet resultSet) throws SQLException {
+    public Map<String, Object> extractResultSet(ResultSet resultSet) throws SQLException, JsonProcessingException {
         HashMap<String, Object> resultData = new HashMap<>();
         ResultSetMetaData metadata = resultSet.getMetaData();
         int columnCount = metadata.getColumnCount();
@@ -286,23 +294,24 @@ public class DataBaseUtil implements DataReader {
             resultMap = (Map<String, Object>) resultData.clone();
 
         for (Map.Entry<String, Object> entry : resultData.entrySet()) {
-            if(documentValue != null && !documentValue.isEmpty()) {
+            if (documentValue != null && !documentValue.isEmpty()) {
                 boolean isDocumentFetch = false;
-                for(Map.Entry<String, DocumentValueMap> documentEntry : documentValue.entrySet()) {
+                for (Map.Entry<String, DocumentValueMap> documentEntry : documentValue.entrySet()) {
                     DocumentValueMap map = documentEntry.getValue();
                     try {
-                        if(resultSet.getString(map.getColumnNameWithoutSchema()) != null) {
+                        if (resultSet.getString(map.getColumnNameWithoutSchema()) != null) {
                             String value = resultSet.getString(map.getColumnNameWithoutSchema());
-                            if(map.getMapColumnValue().equals(value)) {
+                            if (map.getMapColumnValue().equals(value)) {
                                 isDocumentFetch = true;
                                 List<String> fieldList = map.getFieldList();
-                                for(String field : fieldList)
+                                for (String field : fieldList)
                                     try {
                                         resultMap.put(field, resultSet.getObject(field));
                                     } catch (Exception e) {
                                         try {
-                                            resultMap.put(field, resultSet.getObject(field.substring(field.indexOf("_")+1)));
-                                        } catch (Exception ex){}
+                                            resultMap.put(field, resultSet.getObject(field.substring(field.indexOf("_") + 1)));
+                                        } catch (Exception ex) {
+                                        }
                                     }
                                 break;
                             }
@@ -312,16 +321,84 @@ public class DataBaseUtil implements DataReader {
                     }
                 }
 
-                if(isDocumentFetch)
+                if (isDocumentFetch)
                     break;
             } else {
-                resultMap.put(entry.getKey(), resultSet.getObject(entry.getKey()));
+                if ("JSON_DATA_ADDRESS".equalsIgnoreCase(entry.getKey())) {
+
+                    resultMap.put("ADDRESSLINE", getFieldValueByIdCampo(resultSet.getObject(entry.getKey()), "DomicilioCI" ));
+
+                } else {
+
+                    resultMap.put(entry.getKey(), resultSet.getObject(entry.getKey()));
+
+                }
             }
         }
-
         return resultMap;
     }
+    //    public String getFieldValueByIdCampo(Object metadataJsonObj, String idCampo) {
+//
+//        // Define the SQL query to fetch metadata
+////        String sql = "SELECT metadata_detalle FROM dwidentidad.tdoc_documento_mosip WHERE id_persona = ? AND id_plantilla = 18";
+////        // Execute the query and retrieve the metadata JSON string
+////        String metadataJson = jdbcTemplate.queryForObject(sql, String.class, idPersona);
+////        if (metadataJson == null) {
+////            return null; // Return null if no metadata found
+////        }
+//
+//        try {
+//            String metadataJson = new ObjectMapper().writeValueAsString(metadataJsonObj);
+//
+//            JsonNode metadataArray = new ObjectMapper().readTree(metadataJson);
+//
+//            for (JsonNode element : metadataArray) {
+//
+//                JsonNode listaDetalleDocumento = element.path("ListaDetalleDocumento");
+//                for (JsonNode docElement : listaDetalleDocumento) {
+//                    if (idCampo.equals(docElement.path("IdCampo").asText())) {
+//                        return docElement.path("ValorC").asText();
+//                    }
+//                }
+//            }
+//            return null;
+//        } catch (Exception e) {
+//            e.printStackTrace();
+//
+//            return null;
+//
+//        }
+//    }
+    public String getFieldValueByIdCampo(Object metadataJsonObj, String idCampo) {
+        if (metadataJsonObj == null) {
+            return null;
+        }
 
+        try {
+            // PROPER CLOB TO STRING CONVERSION
+            String metadataJson;
+            if (metadataJsonObj instanceof Clob) {
+                Clob clob = (Clob) metadataJsonObj;
+                metadataJson = clob.getSubString(1, (int) clob.length());
+            } else {
+                metadataJson = metadataJsonObj.toString();
+            }
+
+            JsonNode metadataArray = new ObjectMapper().readTree(metadataJson);
+
+            for (JsonNode element : metadataArray) {
+                JsonNode listaDetalleDocumento = element.path("ListaDetalleDocumento");
+                for (JsonNode docElement : listaDetalleDocumento) {
+                    if (idCampo.equals(docElement.path("IdCampo").asText())) {
+                        return docElement.path("ValorC").asText();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace(); // Log properly in production
+        }
+        return null;
+    }
     private String PrepareConjuctionQuery(QueryFilter queryFilter, String mainCondition) throws Exception {
         String condition = "";
         String conjCondition = queryFilter.getConjunctionFilter().getConjuctionType().toString();
